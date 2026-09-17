@@ -14,26 +14,51 @@ export async function POST(request:Request){try{
  if(old&&body.version!==old.version)return reply({error:'This entry changed in another window. Refresh and try again.'},409);
  const action=body.action||'save';
  if(['delete','restore'].includes(action)){
+  if(!old)return reply({error:'Choose an entry.'},400);
+  if(old.deleted===(action==='delete'))return reply(state);
   if(old?.kind==='account')return reply({error:'Deactivate an account instead of deleting it.'},400);
-  if(old?.kind==='debt' && state.records.some(r=>!r.deleted&&r.kind==='payment'&&r.debt===old.id))return reply({error:'Remove its repayments before deleting this debt.'},400);
-  if(action==='restore'&&old?.kind==='payment') {const d=state.debts.find(d=>d.id===old.debt);if(!d||old.amount>d.remaining)return reply({error:'Restoring this payment would overpay the debt.'},400);}
+  if(action==='restore'&&old.kind==='payment') {const d=state.debts.find(d=>d.id===old.debt);if(!d)return reply({error:'Restore the debt first.'},400);if(old.amount>d.remaining)return reply({error:'Restoring this payment would overpay the debt.'},400);}
   let guard='';let extra:any[]=[];
-  if(action==='delete'&&old?.kind==='debt'){guard=" AND NOT EXISTS(SELECT 1 FROM records p WHERE p.user=? AND p.kind='payment' AND p.deleted=0 AND json_extract(p.data,'$.debt')=?)";extra=[u.userId,old.id];}
+  if(action==='restore'&&old.kind==='debt'){guard=" AND ? >= COALESCE((SELECT SUM(CAST(json_extract(data,'$.amount') AS INTEGER)) FROM records WHERE user=? AND kind='payment' AND json_extract(data,'$.debt')=? AND (deleted=0 OR json_extract(data,'$.deletedWithDebt')=?)),0)";extra=[old.amount,u.userId,old.id,old.id];}
   if(action==='restore'&&old?.kind==='payment'){guard=" AND ? <= (SELECT CAST(json_extract(data,'$.amount') AS INTEGER) FROM records WHERE id=? AND user=? AND deleted=0) - COALESCE((SELECT SUM(CAST(json_extract(data,'$.amount') AS INTEGER)) FROM records WHERE user=? AND kind='payment' AND deleted=0 AND json_extract(data,'$.debt')=?),0)";extra=[old.amount,old.debt,u.userId,u.userId,old.debt];}
   const stamp=new Date().toISOString();
   const audit=db.prepare('INSERT INTO history(id,user,record,data,date) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM records WHERE id=? AND user=? AND version=?)').bind(crypto.randomUUID(),u.userId,old!.id,JSON.stringify(old),stamp,old!.id,u.userId,old!.version!+1);
-  const [res]=await db.batch([db.prepare('UPDATE records SET deleted=?,version=version+1,updated=? WHERE user=? AND id=? AND version=?'+guard).bind(action==='delete'?1:0,stamp,u.userId,old!.id,old!.version,...extra),audit]);
+  const operations=[db.prepare('UPDATE records SET deleted=?,version=version+1,updated=? WHERE user=? AND id=? AND version=?'+guard).bind(action==='delete'?1:0,stamp,u.userId,old.id,old.version,...extra),audit];
+  if(old.kind==='debt'){
+   // One atomic batch archives/restores the parent and only its linked active
+   // repayments. Previously deleted repayments remain deleted when restored.
+   const deleted=action==='delete'?1:0;
+   const linked="user=? AND kind='payment' AND json_extract(data,'$.debt')=? AND "+(deleted?"deleted=0":"deleted=1 AND json_extract(data,'$.deletedWithDebt')=?")+" AND EXISTS(SELECT 1 FROM records WHERE id=? AND user=? AND version=? AND deleted=?)";
+   const binds=[u.userId,old.id,...(deleted?[]:[old.id]),old.id,u.userId,old.version!+1,deleted];
+   operations.push(db.prepare("INSERT INTO history(id,user,record,data,date) SELECT lower(hex(randomblob(16))),user,id,json_set(data,'$.version',version,'$.deleted',json(CASE WHEN deleted=1 THEN 'true' ELSE 'false' END)),? FROM records WHERE "+linked).bind(stamp,...binds));
+   const data=deleted?"json_set(data,'$.deletedWithDebt',?)":"json_remove(data,'$.deletedWithDebt')";
+   operations.push(db.prepare('UPDATE records SET data='+data+',deleted=?,version=version+1,updated=? WHERE '+linked).bind(...(deleted?[old.id]:[]),deleted,stamp,...binds));
+  }
+  const [res]=await db.batch(operations);
   if(!res.meta.changes)return reply({error:'Entry changed. Please retry.'},409);
   return reply(await load(u.userId));
  }
+ if(old?.deleted)throw new Error('Restore this entry before editing it.');
  const r:RecordData={...body,id:old?.id||crypto.randomUUID(),kind:old?.kind||body.kind};delete r.action;delete r.version;delete r.deleted;
- if(!['account','income','expense','debt','payment'].includes(r.kind))throw new Error('Invalid entry type.');
+ if(!['account','income','expense','debt','payment','transfer'].includes(r.kind))throw new Error('Invalid entry type.');
  for(const k of ['name','label','description','person','notes'])if(r[k]!=null&&(typeof r[k]!=='string'||r[k].length>2000))throw new Error('Text is too long.');
  if(r.kind==='account'){if(!r.name?.trim())throw new Error('Enter an account name.');if(!Number.isSafeInteger(r.opening)||Math.abs(r.opening)>1000000000000)throw new Error('Enter a valid opening balance.');r.active=!!r.active;}
  else {
   if(!amount(r.amount,r.kind==='expense'))throw new Error('Enter a valid amount with at most two decimal places.');
   if(!(r.kind==='debt'&&old&&!r.date)&&(!validDate(r.date)||r.date>today()))throw new Error('Enter a valid date no later than today.');
   r.affectsBalance=!!r.affectsBalance;
+  // Selecting an account is the cash movement for debt entries; no expense or
+  // income transaction is needed. Undated opening debts from the workbook may
+  // retain their unassigned account because their cash is in the snapshot.
+  if(r.kind==='debt'){
+   r.affectsBalance=!!r.account;
+   if(!r.account&&!(old&&!old.account&&!old.affectsBalance))throw new Error('Choose the account used to lend or borrow this money.');
+  }
+  if(['payment','transfer'].includes(r.kind))r.affectsBalance=true;
+  if(r.kind==='transfer'){
+   if(!r.toAccount||!state.accounts.some(a=>a.id===r.toAccount))throw new Error('Choose a valid destination account.');
+   if(r.account===r.toAccount)throw new Error('Choose two different accounts for a transfer.');
+  }
   if(r.account&&!state.accounts.some(a=>a.id===r.account))throw new Error('Choose a valid account.');
   if(r.affectsBalance&&!r.account)throw new Error('Choose an account for this balance movement.');
   if(['income','expense'].includes(r.kind)&&!r.label?.trim())throw new Error('Enter a source or category.');

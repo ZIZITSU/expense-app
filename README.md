@@ -2,6 +2,10 @@
 
 A private personal finance tracker built from Simple Expenses.xlsx and the supplied SRS. Income, paid/pending/cancelled expenses, opening account balances, account transfers, two-way debts, dated repayments, elapsed days, month filters, CSV/JSON exports and recoverable deletion are included.
 
+## Deploy to Vercel
+
+See [VERCEL.md](VERCEL.md) for the Next.js build, Turso database, password sign-in and current-data migration. `vercel.json` includes the correct build settings. Vercel requires four environment variables; deployment setup is separate from the existing local preview.
+
 ## Run locally
 
 Use Node 22.13 or later. Install with `npm run install:ci`, build with `npm run build`, then start a development preview with `npm run dev`. Apply the generated SQL files in `drizzle/` to the local D1 database before opening the ledger. The portable preview supplies a local test identity through its sign-in flow. Hosted access and identity are enforced by Sites.
@@ -25,3 +29,5 @@ The app saves a daily snapshot on active days, before changes. This is an activi
 The local acceptance checks reconcile every populated month, starting account and debt totals, then verify expense status changes, income cash movements, dated partial/full repayments, overdue flags, simultaneous overpayment rejection, deletion/restore, stale edit protection and authentication. Transfer acceptance checks verify both account movements, unchanged total balance and reports, invalid and same-account rejection, editing, stale version rejection, delete/restore, and simultaneous transfers. The updated dark interface passes TypeScript validation and the production build.
 
 Debt deletion checks cover both directions, partial and fully settled debts, grouped restoration, separately deleted repayments, repeated deletion, stale versions and concurrent repayment/deletion. They verify that existing records and balances are preserved.
+
+Vercel acceptance checks use an isolated local SQLite database with the libSQL client. They verify the production manifest, signed secure sessions, unauthenticated access rejection, spoofed identity rejection, login rate limiting, origin checks, transfers, debt cascade/restore, concurrent repayment protection, and income/expense movements. A separate import test preserves a full current backup exactly and verifies overwrite refusal. No external database or live Vercel deployment was used in these local checks.

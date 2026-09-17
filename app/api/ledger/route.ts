@@ -8,7 +8,7 @@ export async function GET(){try{const u=await getChatGPTUser();if(!u)return repl
 export async function POST(request:Request){try{
  const u=await getChatGPTUser();if(!u)return reply({error:'Please sign in to save.'},401);
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return reply({error:'Invalid request origin.'},403);
- const body:any=await request.json();if(!body||typeof body!=='object'||Array.isArray(body))return reply({error:'Invalid entry.'},400);const state=await load(u.userId);const db=database();
+ const body:any=await request.json();if(!body||typeof body!=='object'||Array.isArray(body))return reply({error:'Invalid entry.'},400);const state=await load(u.userId);const db=await database();
  const old=body.id?state.records.find(r=>r.id===body.id):undefined;
  if(body.id&&!old)return reply({error:'This entry was not found.'},404);
  if(old&&body.version!==old.version)return reply({error:'This entry changed in another window. Refresh and try again.'},409);

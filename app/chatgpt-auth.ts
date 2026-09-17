@@ -1,5 +1,7 @@
-import { headers } from "next/headers";
+import { headers,cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { standalone } from '@/lib/runtime';
+import { SESSION_COOKIE,OWNER_ID,validSession } from '@/lib/session';
 
 export type ChatGPTUser = {
   userId: string;
@@ -19,6 +21,10 @@ const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
+  if(standalone){
+    const token=(await cookies()).get(SESSION_COOKIE)?.value;
+    return await validSession(token)?{userId:OWNER_ID,displayName:'My ledger',email:'owner@local',fullName:null}:null;
+  }
   const requestHeaders = await headers();
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
@@ -49,6 +55,7 @@ export async function requireChatGPTUser(
 }
 
 export function chatGPTSignInPath(returnTo: string): string {
+  if(standalone)return '/login';
   const safeReturnTo = safeRelativeReturnPath(returnTo);
   return `${SIGN_IN_PATH}?return_to=${encodeURIComponent(safeReturnTo)}`;
 }

@@ -13,7 +13,9 @@ export function summarize(all: RecordData[]) {
    if(r.kind==='payment'){const d=records.find(d=>d.kind==='debt'&&d.id===r.debt); return d?n+(d.direction==='owed_to_me'?r.amount:-r.amount):n;}
    return n;
  },0)}));
- const debts:RecordData[]=records.filter(r=>r.kind==='debt').map(d=>{const payments=records.filter(p=>p.kind==='payment'&&p.debt===d.id).sort((a,b)=>a.date.localeCompare(b.date));const settled=payments.reduce((n,p)=>n+p.amount,0);const remaining=d.amount-settled;return {...d,payments,settled,remaining,days:elapsed(d.date,remaining===0?payments.at(-1)?.date:today()),status: remaining===0?'paid':d.due&&d.due<today()?'overdue':settled?'partially_paid':'pending'};});
+ // Removed debts and their repayments are gone from view but, unlike deleted
+ // entries, still count toward account balances above.
+ const debts:RecordData[]=records.filter(r=>r.kind==='debt'&&!r.removed).map(d=>{const payments=records.filter(p=>p.kind==='payment'&&p.debt===d.id).sort((a,b)=>a.date.localeCompare(b.date));const settled=payments.reduce((n,p)=>n+p.amount,0);const remaining=d.amount-settled;return {...d,payments,settled,remaining,days:elapsed(d.date,remaining===0?payments.at(-1)?.date:today()),status: remaining===0?'paid':d.due&&d.due<today()?'overdue':settled?'partially_paid':'pending'};});
  const months=[...new Set(tx.map(r=>r.date.slice(0,7)))].sort().map(month=>{const rows=tx.filter(r=>r.date.startsWith(month));const income=rows.filter(r=>r.kind==='income').reduce((n,r)=>n+r.amount,0),expenses=rows.filter(r=>r.kind==='expense'&&r.status==='done').reduce((n,r)=>n+r.amount,0);return {month,income,expenses,surplus:income-expenses};});
  return {records:all,accounts,debts,months,totalBalance:accounts.reduce((n,a)=>n+a.balance,0),today:today()};
 }

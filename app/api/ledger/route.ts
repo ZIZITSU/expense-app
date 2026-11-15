@@ -10,13 +10,25 @@ export async function POST(request:Request){try{
  const origin=request.headers.get('origin');if(origin&&origin!==new URL(request.url).origin)return reply({error:'Invalid request origin.'},403);
  const body:any=await request.json();if(!body||typeof body!=='object'||Array.isArray(body))return reply({error:'Invalid entry.'},400);const state=await load(u.userId);const db=await database();
  const old=body.id?state.records.find(r=>r.id===body.id):undefined;
- if(body.id&&!old)return reply({error:'This entry was not found.'},404);
+ if((body.id&&!old)||old?.removed)return reply({error:'This entry was not found.'},404);
  if(old&&body.version!==old.version)return reply({error:'This entry changed in another window. Refresh and try again.'},409);
  const action=body.action||'save';
  if(['delete','restore'].includes(action)){
   if(!old)return reply({error:'Choose an entry.'},400);
   if(old.deleted===(action==='delete'))return reply(state);
   if(old?.kind==='account')return reply({error:'Deactivate an account instead of deleting it.'},400);
+  if(action==='delete'&&old.kind==='debt'){
+   // Deleting a debt removes it and all of its repayments for good. Their cash
+   // movements really happened, so account balances keep counting them.
+   const stamp=new Date().toISOString(),removed="json_set(data,'$.removed',json('true'))";
+   const [res]=await db.batch([
+    db.prepare('UPDATE records SET data='+removed+',version=version+1,updated=? WHERE user=? AND id=? AND version=? AND deleted=0').bind(stamp,u.userId,old.id,old.version),
+    db.prepare('INSERT INTO history(id,user,record,data,date) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM records WHERE id=? AND user=? AND version=?)').bind(crypto.randomUUID(),u.userId,old.id,JSON.stringify(old),stamp,old.id,u.userId,old.version!+1),
+    db.prepare("UPDATE records SET data="+removed+",version=version+1,updated=? WHERE user=? AND kind='payment' AND json_extract(data,'$.debt')=? AND EXISTS(SELECT 1 FROM records WHERE id=? AND user=? AND version=?)").bind(stamp,u.userId,old.id,old.id,u.userId,old.version!+1),
+   ]);
+   if(!res.meta.changes)return reply({error:'Entry changed. Please retry.'},409);
+   return reply(await load(u.userId));
+  }
   if(action==='restore'&&old.kind==='payment') {const d=state.debts.find(d=>d.id===old.debt);if(!d)return reply({error:'Restore the debt first.'},400);if(old.amount>d.remaining)return reply({error:'Restoring this payment would overpay the debt.'},400);}
   let guard='';let extra:any[]=[];
   if(action==='restore'&&old.kind==='debt'){guard=" AND ? >= COALESCE((SELECT SUM(CAST(json_extract(data,'$.amount') AS INTEGER)) FROM records WHERE user=? AND kind='payment' AND json_extract(data,'$.debt')=? AND (deleted=0 OR json_extract(data,'$.deletedWithDebt')=?)),0)";extra=[old.amount,u.userId,old.id,old.id];}
